@@ -1,9 +1,10 @@
 [package]
 name = "dyn-loader"
-version = "0.5.2"
+version = "0.5.3"
 edition = "2024"
 description = "Standardized module loading protocol over the C ABI: language-agnostic interface tables, ref-counted interface references and single-owner data boxes for .so/.dll/.dylib modules. Includes a Rust-native fat-pointer fast path (same-compiler-version clause)."
-license = "MIT"
+license = "Apache-2.0"
+repository = "https://github.com/avx16384/dyn-loader"
 readme = "README.md"
 
 [dependencies]

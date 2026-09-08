@@ -422,4 +422,6 @@ caller is still responsible for ABI compatibility (see the warning above).
 
 ## License
 
-MIT
+Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).
+Redistributions must retain the attribution notices in `NOTICE`
+(Apache-2.0 §4(c)/(d)).
