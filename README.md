@@ -4,43 +4,48 @@ A **language-agnostic module loading protocol** over the C ABI. Any dynamic
 library (`.so` / `.dll` / `.dylib`) that follows the protocol becomes a
 *module* that any host — in any language — can load, call, share and release.
 
-Two layers:
+Two modes — **Mode 1 is the primary, recommended way to use this crate**:
 
-1. **`abi`** — the protocol standard layer: interface tables
+1. **`native` (Mode 1 — recommended)** — the Rust fat-pointer bridge: skip
+   hand-written vtables by exchanging native Rust fat pointers
+   ([`SafeArcDyn`], [`NativeModule`]). Full Rust ergonomics with Arc-like
+   reference counting. Requires an identical toolchain on both sides.
+   Rust-to-Rust only.
+2. **`abi` (Mode 2)** — the C interface table: interface tables
    ([`AbiTable<T>`]), ref-counted interface references ([`AbiRef<T>`],
    [`AbiStableDynRef`]) and single-owner data boxes ([`AbiBox`]). Plain
    `#[repr(C)]` function-pointer structs — ABI-stable, usable from
-   C/C++/Zig/anything with a C FFI.
-2. **`native`** — the Rust convenience layer: skip hand-written vtables by
-   exchanging native Rust fat pointers ([`SafeArcDyn`], [`NativeModule`]).
-   Requires an identical toolchain on both sides. Rust-to-Rust only.
+   C/C++/Zig/anything with a C FFI. The more stable of the two modes
+   across toolchains and languages — reach for it when cross-language
+   access matters more than ergonomics.
 
 Core types:
 
 - **`DynLib`**: wraps `libloading::Library` with `Arc` for shared ownership.
-- **`AbiDynFatPtr`**: ABI-stable representation of a Rust fat pointer
-  (data ptr + vtable ptr), `#[repr(C)]`.
+- **`NativeModule<T>`**: loaded module holding a `SafeArcDyn<T>` that
+  dereferences to `&T` for calling trait methods on the loaded object
+  (Mode 1).
+- **`SafeArcDyn<T>`**: safe, cloneable handle over an `AbiStableDynRef`.
 - **`AbiStableDynRef`**: fat pointer + retain/release function pointers,
   enabling safe cross-boundary Arc-like reference counting.
-- **`SafeArcDyn<T>`**: safe, cloneable handle over an `AbiStableDynRef`.
-- **`NativeModule<T>`**: loaded module holding a `SafeArcDyn<T>` that
-  dereferences to `&T` for calling trait methods on the loaded object.
-- **`AbiTable<T>`**: loaded C function table (the `abi` layer).
+- **`AbiDynFatPtr`**: ABI-stable representation of a Rust fat pointer
+  (data ptr + vtable ptr), `#[repr(C)]`.
+- **`AbiTable<T>`**: loaded C function table (Mode 2).
 - **`AbiRef<T>`**: ref-counted handle to a foreign module object.
 - **`AbiBox` / `AbiBoxHandle`**: single-owner data box with a producer-side
   `free` function pointer.
 
 ## ⚠️ IMPORTANT — ABI compatibility / compiler version alignment
 
-> **You must strictly align the Rust compiler version for the `native`
-> layer.** Every library and executable that exchanges Rust dyn fat pointers
-> across the boundary **must be built with the exact same Rust compiler
-> version** to guarantee a stable ABI. Rust makes no ABI stability
+> **You must strictly align the Rust compiler version for Mode 1
+> (`native`).** Every library and executable that exchanges Rust dyn fat
+> pointers across the boundary **must be built with the exact same Rust
+> compiler version** to guarantee a stable ABI. Rust makes no ABI stability
 > guarantees between compiler releases (vtable layout, metadata encoding,
 > etc. may change). Mixing compiler versions between the host and modules
 > is **undefined behavior**.
 >
-> The `abi` layer has no such requirement — its layout is fixed by
+> Mode 2 (`abi`) has no such requirement — its layout is fixed by
 > `#[repr(C)]` and the C calling convention.
 >
 > Pin one toolchain (e.g. via `rust-toolchain.toml`) and rebuild **all**
@@ -48,7 +53,37 @@ Core types:
 
 ## Usage
 
-### Layer 1: `abi` — C interface table (cross-language)
+### Mode 1: `native` — Rust fat-pointer bridge (recommended)
+
+Load Rust trait objects from a `.so` built with the **same compiler
+version**. The module exports a `#[no_mangle] extern "C"` entry point
+returning an `AbiStableDynRef`.
+
+**Module side (the `.so`/`.dylib`)**
+
+```rust,ignore
+use dyn_loader::{AbiStableDynRef, SafeArcDyn};
+use std::sync::Arc;
+
+#[no_mangle]
+pub extern "C" fn my_transform_entry() -> AbiStableDynRef {
+    SafeArcDyn::from_arc(Arc::new(MyTransform) as Arc<dyn Transform>).into_abi()
+}
+```
+
+**Host side**
+
+```rust,ignore
+use dyn_loader::NativeModule;
+
+let module = NativeModule::<dyn Transform>::load(
+    "libmy_transform.so",
+    b"my_transform_entry\0",
+)?;
+let transform: &dyn Transform = module.trait_ref();
+```
+
+### Mode 2: `abi` — C interface table (cross-language)
 
 The module exports a function returning a `*const` to a plain
 `#[repr(C)]` struct of function pointers. No trait objects involved —
@@ -148,7 +183,8 @@ Rules the macro enforces for you:
 - vtable field order **is** the protocol — it follows trait method
   declaration order; never reorder after release.
 - all fn pointers are `extern "C"` (cdecl) with a leading
-  `ctx: *mut c_void` (the two protocol laws: 谁分配谁释放 / 谁创建谁操作).
+  `ctx: *mut c_void` — memory ownership and behavior both stay on the
+  module side.
 - `$instance` must be const-constructible (unit struct, `const fn`, literal).
 - only C scalars (i8..i64, u8..u64, f32/f64, bool, usize/isize) may appear
   in signatures; anything else is rejected at compile time.
@@ -234,42 +270,12 @@ Rules for foreign hosts and modules:
 - pass `NULL`/`null` ctx for stateless tables; instance handles (`AbiRef`)
   pass the ctx they received from the module.
 
-### Layer 2: `native` — Rust fat-pointer bridge
-
-Load Rust trait objects from a `.so` built with the **same compiler
-version**. The module exports a `#[no_mangle] extern "C"` entry point
-returning an `AbiStableDynRef`.
-
-**Module side (the `.so`/`.dylib`)**
-
-```rust,ignore
-use dyn_loader::{AbiStableDynRef, SafeArcDyn};
-use std::sync::Arc;
-
-#[no_mangle]
-pub extern "C" fn core_ast_transform_entry() -> AbiStableDynRef {
-    SafeArcDyn::from_arc(Arc::new(MyTransform) as Arc<dyn Transform>).into_abi()
-}
-```
-
-**Host side**
-
-```rust,ignore
-use dyn_loader::NativeModule;
-
-let module = NativeModule::<dyn Transform>::load(
-    "libmy_transform.so",
-    b"core_ast_transform_entry\0",
-)?;
-let transform: &dyn Transform = module.trait_ref();
-```
-
 ---
 
 ## The interface-table mechanism — how cross-language loading works
 
-*(This section explains the mechanism behind the `abi` layer. If you just
-want to use it, skip to the tutorial below.)*
+*(This section explains the mechanism behind Mode 2. If you just want to
+use it, skip to the tutorial below.)*
 
 ### The problem it solves
 
@@ -327,7 +333,7 @@ equation:
   / cdecl), which every language can produce.
 - Nothing Rust-specific crosses the boundary: no trait objects, no
   panics, no `Result`, no allocator. The host never allocates or frees
-  module memory in this layer.
+  module memory in this mode.
 
 ### The ownership tiers on top
 
@@ -349,7 +355,7 @@ Both follow the two invariants: *whoever allocates, deallocates* and
 
 ---
 
-## Tutorial — plain interface-table bridge
+## Tutorial — Mode 2: plain interface-table bridge
 
 A complete, minimal walkthrough. No theory — just the steps.
 
@@ -476,18 +482,20 @@ loads them unchanged.
 
 ## Toolchain / ABI compatibility matrix
 
-The two loading layers have different ABI stability guarantees:
+Mode 2 is the more stable of the two, but **Mode 1 is the primary,
+recommended mode** — prefer it whenever both sides are Rust built from the
+same toolchain. The stability guarantees differ:
 
-| Layer | Module path | ABI stability | Cross-compiler-version safe? | Cross-language (C++/Zig) safe? |
+| Mode | Module path | ABI stability | Cross-compiler-version safe? | Cross-language (C++/Zig) safe? |
 |---|---|---|---|---|
-| Rust fat-pointer bridge | `native` | ❌ Unstable — depends on Rust vtable layout | **No** — host & module must use the *exact same* compiler version | ❌ No (Rust trait objects only) |
-| C interface table | `abi` (`AbiTable<T>`) | ✅ Stable — plain `#[repr(C)]` struct of function pointers | ✅ Yes, to a large extent (layout is fixed by `#[repr(C)]`) | ✅ Yes — any language with a C FFI |
+| Mode 1 — Rust fat-pointer bridge | `native` | ❌ Unstable — depends on Rust vtable layout | **No** — host & module must use the *exact same* compiler version | ❌ No (Rust trait objects only) |
+| Mode 2 — C interface table | `abi` (`AbiTable<T>`) | ✅ Stable — plain `#[repr(C)]` struct of function pointers | ✅ Yes, to a large extent (layout is fixed by `#[repr(C)]`) | ✅ Yes — any language with a C FFI |
 
 ### Verified compiler versions
 
 Cross-version interoperability was verified with an actual host/module matrix
 test (module compiled to a `.so` with toolchain A, loaded by a host binary
-compiled with toolchain B). **All 16 combinations passed** (both layers) as of
+compiled with toolchain B). **All 16 combinations passed** (both modes) as of
 2026-09:
 
 | Toolchain pair (host ↔ module)                    | `native` (fat-pointer bridge)                     | `abi` (C interface table)        |
@@ -509,7 +517,7 @@ Notes:
   officially makes no ABI stability promise between compiler releases — a
   future release may break it silently. Always re-run the matrix test when
   adopting a new toolchain, and prefer exact version alignment in production.
-- The `abi` layer is layout-stable by construction (`#[repr(C)]` struct of
+- Mode 2 (`abi`) is layout-stable by construction (`#[repr(C)]` struct of
   function pointers), but both sides must still compile the *same* `T`
   definition (same field order, same pointer widths).
 - The `AbiDynFatPtr` / `AbiStableDynRef` structs are `#[repr(C)]` and

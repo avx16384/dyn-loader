@@ -26,13 +26,13 @@
 //! ```ignore
 //! // In the module (.so):
 //! #[no_mangle]
-//! pub extern "C" fn core_ast_transform_entry() -> AbiStableDynRef {
+//! pub extern "C" fn my_transform_entry() -> AbiStableDynRef {
 //!     SafeArcDyn::from_arc(Arc::new(MyTransform) as Arc<dyn Transform>).into_abi()
 //! }
 //!
 //! // In the host:
 //! use dyn_loader::native::{NativeModule, AbiStableDynRef, SafeArcDyn};
-//! let module = NativeModule::<dyn Transform>::load("libmy_transform.so", b"core_ast_transform_entry\0")?;
+//! let module = NativeModule::<dyn Transform>::load("libmy_transform.so", b"my_transform_entry\0")?;
 //! let transform: &dyn Transform = module.trait_ref();
 //! ```
 
