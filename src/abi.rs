@@ -5,9 +5,9 @@
 //! purely positional dispatch. This is the COM+-like emulated vtable system
 //! (formerly the separate `cdyn-loader` crate).
 //!
-//! Unlike [`crate::native`], this mode is ABI-stable across languages:
-//! the C++ SDK (`cdyn-loader-sdks/cpp`) and Zig SDK (`cdyn-loader-sdks/zig`)
-//! build plugins that match these layouts exactly.
+//! Unlike [`crate::native`], this layer is ABI-stable across languages:
+//! the C++ SDK (`cpp/cdyn-loader-sdks`) and Zig SDK (`zig/cdyn-loader-sdks`)
+//! build modules that match these layouts exactly.
 //!
 //! ## Cross-module memory ownership model
 //!
@@ -37,14 +37,14 @@
 //! | Tier | Type | Ownership | Free function |
 //! |---|---|---|---|
 //! | Stateless | [`AbiTable<T>`] | none (static vtable) | — |
-//! | Instance (multi-owner) | [`AbiRef<T>`] | ref-counted via `retain`/`release` fn ptrs in `AbiStableDynRef` | provided by the plugin |
+//! | Instance (multi-owner) | [`AbiRef<T>`] | ref-counted via `retain`/`release` fn ptrs in `AbiStableDynRef` | provided by the module |
 //! | Data (single-owner) | [`AbiBox`] / [`AbiBoxHandle`] | move-only, exactly one owner | `free` fn ptr in the box, provided by the allocating module |
 //!
 //! Cross-module safety rules enforced by construction:
 //!
 //! 1. **Allocator symmetry** — `free`/`release` always execute inside the
 //!    module that allocated (the function pointer belongs to that module's
-//!    code, e.g. `AbiBox::from_vec` pairs with a Rust-plugin allocator).
+//!    code, e.g. `AbiBox::from_vec` pairs with a Rust-module allocator).
 //! 2. **Library lifetime** — [`AbiBoxHandle`] and [`AbiRef<T>`] own a
 //!    [`DynLib`](crate::DynLib) (Arc-shared), so the library cannot be
 //!    unloaded while a handle (and thus a free/release fn ptr) still exists.
@@ -58,8 +58,8 @@
 //!     name: unsafe extern "C" fn() -> *const std::ffi::c_char,
 //! }
 //!
-//! let plugin = unsafe { AbiTable::<MyVtable>::load("libmy.so", b"my_get_vtable\0")? };
-//! let n = unsafe { (plugin.vtable().add)(1, 2) };
+//! let module = unsafe { AbiTable::<MyVtable>::load("libmy.so", b"my_get_vtable\0")? };
+//! let n = unsafe { (module.vtable().add)(1, 2) };
 //! ```
 
 use std::ffi::c_char;
@@ -163,7 +163,7 @@ unsafe impl Sync for MathModuleVtable {}
 
 /// A cross-module data box: memory allocated and freed by the **same** module.
 ///
-/// This is the cdyn mode's raw-data smart pointer, complementing the
+/// This is the abi layer's raw-data smart pointer, complementing the
 /// ref-counted instance handle [`AbiRef<T>`]:
 ///
 /// - Instance objects (with vtables) → ref-counted, use `AbiStableDynRef`'s
@@ -211,11 +211,11 @@ impl AbiBox {
         self.data.is_null()
     }
 
-    /// **Plugin side (Rust)** — wrap an owned `Vec<u8>` into a box.
+    /// **Module side (Rust)** — wrap an owned `Vec<u8>` into a box.
     ///
     /// The buffer is exact-fit (`into_boxed_slice`), so `len == capacity` and
     /// the paired [`abi_box_free_rust`] can reconstruct and free it. The
-    /// returned `free` pointer executes in the plugin's code — the module
+    /// returned `free` pointer executes in the module's code — the module
     /// that owns the allocation.
     pub fn from_vec(v: Vec<u8>) -> Self {
         let boxed: Box<[u8]> = v.into_boxed_slice();
@@ -249,16 +249,16 @@ impl AbiBox {
 }
 
 // SAFETY: AbiBox is a raw pointer + length + fn pointer; thread-safety is
-// the plugin's declared guarantee (same policy as AbiStableDynRef).
+// the module's declared guarantee (same policy as AbiStableDynRef).
 unsafe impl Send for AbiBox {}
 unsafe impl Sync for AbiBox {}
 
 unsafe extern "C" fn abi_box_free_noop(_: *mut std::ffi::c_void, _: usize) {}
 
-/// **Rust plugin** free function paired with [`AbiBox::from_vec`].
+/// **Rust module** free function paired with [`AbiBox::from_vec`].
 ///
-/// Executes in the plugin module; reconstructs the exact-fit boxed slice and
-/// drops it with the plugin's own allocator.
+/// Executes in the module that allocated the buffer; reconstructs the
+/// exact-fit boxed slice and drops it with that module's own allocator.
 pub unsafe extern "C" fn abi_box_free_rust(
     data: *mut std::ffi::c_void,
     len: usize,
@@ -266,7 +266,9 @@ pub unsafe extern "C" fn abi_box_free_rust(
     if data.is_null() {
         return;
     }
-    let slice_ptr = std::slice::from_raw_parts_mut(data as *mut u8, len) as *mut [u8];
+    // SAFETY: caller guarantees `data` points to `len` bytes allocated by
+    // `AbiBox::from_vec` (exact-fit boxed slice).
+    let slice_ptr = unsafe { std::slice::from_raw_parts_mut(data as *mut u8, len) } as *mut [u8];
     drop(unsafe { Box::from_raw(slice_ptr) });
 }
 
@@ -376,9 +378,9 @@ mod cdyn_handle_tests {
     use super::*;
     use std::sync::atomic::{AtomicU32, Ordering};
 
-    // A minimal "foreign-style" plugin simulated in-process:
+    // A minimal "foreign-style" module simulated in-process:
     // static instance + atomic ref-count + vtable of thunks — exactly the
-    // pattern the C++ CdynExposed / Zig CdynPlugin generate.
+    // pattern the C++ / Zig SDKs generate.
     static INSTANCE: u64 = 0xdead_beef;
     static REFCOUNT: AtomicU32 = AtomicU32::new(0);
 
@@ -410,7 +412,7 @@ mod cdyn_handle_tests {
 
     #[test]
     fn cdyn_handle_retain_release_roundtrip() {
-        REFCOUNT.store(1, Ordering::SeqCst); // plugin starts with 1 ref
+        REFCOUNT.store(1, Ordering::SeqCst); // module starts with 1 ref
 
         let raw = AbiStableDynRef {
             object: crate::native::AbiDynFatPtr {
@@ -459,7 +461,7 @@ mod cdyn_handle_tests {
         let raw2 = h.into_raw(); // must NOT call release
         drop(raw2); // plain Copy struct, no Drop
         assert_eq!(REFCOUNT.load(Ordering::SeqCst), 1); // unchanged
-        // give the ref back to the "plugin" to balance counts
+        // give the ref back to the "module" to balance counts
         REFCOUNT.fetch_sub(1, Ordering::SeqCst);
     }
 
@@ -499,7 +501,7 @@ mod cdyn_handle_tests {
 
     #[test]
     fn cdyn_box_from_vec_roundtrip_and_free() {
-        // Plugin side: from_vec pairs with abi_box_free_rust (same module).
+        // Module side: from_vec pairs with abi_box_free_rust (same module).
         let box_ = AbiBox::from_vec(b"hello cross-module".to_vec());
         assert_eq!(box_.len, 18);
         let handle = unsafe { AbiBoxHandle::from_box_unowned(box_) };
@@ -534,33 +536,30 @@ mod cdyn_handle_tests {
 // AbiRef — cross-language ref-counted smart handle
 // ---------------------------------------------------------------------------
 
-/// Ref-counted handle to a **foreign** plugin object exposed through a
+/// Ref-counted handle to a **foreign** module object exposed through a
 /// `*_get_dyn` style entry point returning an [`AbiStableDynRef`].
 ///
-/// This is the Rust-side counterpart of the C++ SDK's `CdynExposed` /
-/// `CdynPlugin` and the Zig SDK's `CdynPlugin(PluginType)`:
-///
-/// - [`clone`](Clone::clone) → calls the plugin's `retain`
-/// - [`drop`](Drop) → calls the plugin's `release`
+/// - [`clone`](Clone::clone) → calls the module's `retain`
+/// - [`drop`](Drop) → calls the module's `release`
 /// - [`ctx`](Self::ctx) → the instance pointer (first arg of every vtable method)
 /// - [`vtable`](Self::vtable) → `&T` reconstructed from the packed vtable pointer
 ///
 /// `T` is the C-layout vtable struct (`#[repr(C)]`, `Copy`) — e.g.
 /// [`MathModuleVtable`] or your own. The vtable is **not** copied; it is
 /// referenced through the pointer packed inside the dyn ref (it points into
-/// the plugin's static storage, valid while the library stays loaded).
+/// the module's static storage, valid while the library stays loaded).
 ///
 /// # Example
 ///
 /// ```ignore
-/// // C++ plugin built with: CDYN_EXPOSE_CLASS(MathPlugin, MathModuleVtable, math)
+/// // C++ module built with: CDYN_EXPOSE_CLASS(MathModule, MathModuleVtable, math)
 /// // exports: math_get_vtable() and math_get_dyn()
 /// let handle = unsafe { AbiRef::<MathModuleVtable>::load(&path, b"math_get_dyn\0")? };
 /// let vt = unsafe { handle.vtable() };
 /// let session = unsafe { (vt.create_session)() };
 /// let sum = unsafe { (vt.add_i32)(session, 1, 2) };
 /// unsafe { (vt.destroy_session)(session) };
-/// // handle drop → plugin release()
+/// // handle drop → module release()
 /// ```
 pub struct AbiRef<T: Copy> {
     _lib: DynLib,
@@ -569,7 +568,7 @@ pub struct AbiRef<T: Copy> {
 }
 
 impl<T: Copy> AbiRef<T> {
-    /// Load a foreign plugin object via its dyn entry point.
+    /// Load a foreign module object via its dyn entry point.
     ///
     /// # Safety
     ///
@@ -606,12 +605,12 @@ impl<T: Copy> AbiRef<T> {
     /// Reconstruct from a raw [`AbiStableDynRef`] obtained elsewhere.
     ///
     /// The handle does not own the originating library; the caller must keep
-    /// it loaded (e.g. hold another [`DynPlugin`](crate::DynPlugin) or
+    /// it loaded (e.g. hold another [`NativeModule`](crate::NativeModule) or
     /// [`DynLib`](crate::DynLib)) for as long as this handle lives.
     ///
     /// # Safety
     ///
-    /// `raw` must be a live ref produced by a compatible plugin.
+    /// `raw` must be a live ref produced by a compatible module.
     pub unsafe fn from_raw(raw: AbiStableDynRef) -> Self {
         Self {
             _lib: DynLib::unowned(),
@@ -629,7 +628,7 @@ impl<T: Copy> AbiRef<T> {
     ///
     /// # Safety
     ///
-    /// `T` must be the exact vtable type the plugin used when building the ref.
+    /// `T` must be the exact vtable type the module used when building the ref.
     pub unsafe fn vtable(&self) -> &T {
         unsafe { &*(self.raw.object.vtable as *const T) }
     }
@@ -639,9 +638,9 @@ impl<T: Copy> AbiRef<T> {
         &self.raw
     }
 
-    /// Consume without calling `release` (ownership handed back to the plugin).
+    /// Consume without calling `release` (ownership handed back to the module).
     pub fn into_raw(self) -> AbiStableDynRef {
-        let mut this = std::mem::ManuallyDrop::new(self);
+        let this = std::mem::ManuallyDrop::new(self);
         // Detach the library handle so Drop won't run for it either.
         let lib = unsafe { std::ptr::read(&this._lib) };
         std::mem::forget(lib);
@@ -649,12 +648,12 @@ impl<T: Copy> AbiRef<T> {
     }
 }
 
-/// Type of the dyn entry point that foreign plugins export
+/// Type of the dyn entry point that foreign modules export
 /// (C++ `CDYN_EXPORT AbiStableDynRef name_get_dyn()`, Zig `declareDynEntry`).
 pub use crate::native::ModuleDynEntryPoint;
 
-// SAFETY: AbiRef manages the plugin's own ref-count via retain/release;
-// thread-safety follows the plugin's guarantees (same policy as SafeArcDyn).
+// SAFETY: AbiRef manages the module's own ref-count via retain/release;
+// thread-safety follows the module's guarantees (same policy as SafeArcDyn).
 unsafe impl<T: Copy + Send> Send for AbiRef<T> {}
 unsafe impl<T: Copy + Sync> Sync for AbiRef<T> {}
 
@@ -697,10 +696,10 @@ mod cpp_math_tests {
             return;
         }
 
-        let plugin =
+        let module =
             unsafe { AbiTable::<MathModuleVtable>::load(&path, b"math_module_get_vtable\0") }
                 .expect("failed to load math_module");
-        let vt = plugin.vtable();
+        let vt = module.vtable();
 
         // Module info
         unsafe {

@@ -1,38 +1,39 @@
-//! # dyn — Rust fat-pointer bridge for trait objects
+//! # native — Rust fat-pointer bridge for trait objects
 //!
-//! Load trait objects from `.so`/`.dylib` plugins using Rust's native
+//! Load trait objects from `.so`/`.dylib` modules using Rust's native
 //! fat-pointer representation (data pointer + vtable pointer), wrapped with
 //! Arc-like retain/release for cross-boundary memory safety.
 //!
-//! This module follows the two cross-module invariants shared by all modes
-//! of this crate (see [`crate::cdyn`] for the full statement):
+//! This module follows the two cross-module invariants shared by all layers
+//! of this crate (see [`crate::abi`] for the full statement):
 //!
-//! 1. **Whoever allocates, deallocates** — the plugin's `retain`/`release`
-//!    function pointers execute inside the plugin module (for Rust plugins
-//!    they wrap `Arc` ref-count ops on the plugin's own heap allocation).
+//! 1. **Whoever allocates, deallocates** — the module's `retain`/`release`
+//!    function pointers execute inside the module that created the object
+//!    (for Rust modules they wrap `Arc` ref-count ops on the module's own
+//!    heap allocation).
 //! 2. **Whoever creates, operates** — the host receives the fat pointer and
 //!    calls through it; every method dispatch goes through the vtable the
-//!    plugin created, executing plugin-side code.
+//!    module created, executing module-side code.
 //!
 //! - **AbiDynFatPtr**: ABI-stable representation of a Rust fat pointer,
 //!   `#[repr(C)]` for C ABI compatibility.
 //! - **AbiStableDynRef**: fat pointer + retain/release function pointers.
 //! - **SafeArcDyn<T>**: safe, cloneable handle over an `AbiStableDynRef`.
-//! - **NativeModule<T>**: loaded plugin dereferencing to `&T`.
+//! - **NativeModule<T>**: loaded module dereferencing to `&T`.
 //!
 //! ## Usage
 //!
 //! ```ignore
-//! // In the plugin .so:
+//! // In the module (.so):
 //! #[no_mangle]
 //! pub extern "C" fn core_ast_transform_entry() -> AbiStableDynRef {
 //!     SafeArcDyn::from_arc(Arc::new(MyTransform) as Arc<dyn Transform>).into_abi()
 //! }
 //!
 //! // In the host:
-//! use dyn_loader::dyn_mod::{NativeModule, AbiStableDynRef, SafeArcDyn};
-//! let plugin = NativeModule::<dyn Transform>::load("libmy_transform.so", b"core_ast_transform_entry\0")?;
-//! let transform: &dyn Transform = plugin.trait_ref();
+//! use dyn_loader::native::{NativeModule, AbiStableDynRef, SafeArcDyn};
+//! let module = NativeModule::<dyn Transform>::load("libmy_transform.so", b"core_ast_transform_entry\0")?;
+//! let transform: &dyn Transform = module.trait_ref();
 //! ```
 
 use std::ffi::c_void;
@@ -179,7 +180,7 @@ impl<T: ?Sized> SafeArcDyn<T> {
         }
     }
 
-    /// Get the ABI-stable representation (for exporting from a plugin).
+    /// Get the ABI-stable representation (for exporting from a module).
     pub fn into_abi(self) -> AbiStableDynRef {
         let raw = self.raw;
         std::mem::forget(self); // Don't drop — caller takes ownership
@@ -229,21 +230,21 @@ impl<T: ?Sized> Drop for SafeArcDyn<T> {
 }
 
 // ---------------------------------------------------------------------------
-// NativeModule — loaded plugin with trait object access
+// NativeModule — loaded module with trait object access
 // ---------------------------------------------------------------------------
 
-/// A loaded dynamic library plugin that exposes a trait object via
-/// the dyn-fat-pointer-bridge pattern.
+/// A loaded dynamic library module that exposes a trait object via
+/// the native fat-pointer bridge.
 pub struct NativeModule<T: ?Sized> {
     _lib: DynLib,
-    plugin: SafeArcDyn<T>,
+    handle: SafeArcDyn<T>,
 }
 
-/// Type of the entry point function that plugins must export.
+/// Type of the entry point function that modules must export.
 pub type ModuleDynEntryPoint = unsafe extern "C" fn() -> AbiStableDynRef;
 
 impl<T: ?Sized> NativeModule<T> {
-    /// Load a plugin from a dynamic library file.
+    /// Load a module from a dynamic library file.
     ///
     /// The library must export a function with the given symbol name
     /// that returns an `AbiStableDynRef` created via `SafeArcDyn::into_abi()`.
@@ -268,18 +269,18 @@ impl<T: ?Sized> NativeModule<T> {
         if abi_ref.is_null() {
             anyhow::bail!("entry point returned null AbiStableDynRef");
         }
-        let plugin = unsafe { SafeArcDyn::<T>::from_abi(abi_ref) };
-        Ok(Self { _lib: lib, plugin })
+        let handle = unsafe { SafeArcDyn::<T>::from_abi(abi_ref) };
+        Ok(Self { _lib: lib, handle })
     }
 
     /// Get a reference to the loaded trait object.
     pub fn trait_ref(&self) -> &T {
-        unsafe { self.plugin.trait_ref() }
+        unsafe { self.handle.trait_ref() }
     }
 
     /// Get a cloned SafeArcDyn (for sharing across threads).
     pub fn clone_handle(&self) -> SafeArcDyn<T> {
-        self.plugin.clone()
+        self.handle.clone()
     }
 }
 

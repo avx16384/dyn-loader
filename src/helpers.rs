@@ -1,5 +1,5 @@
-//! Shared `DynLib` wrapper and helpers used by both [`crate::dyn_mod`]
-//! (Rust fat-pointer bridge) and [`crate::cdyn`] (COM-style vtable loading).
+//! Shared `DynLib` wrapper and helpers used by both [`crate::native`]
+//! (Rust fat-pointer bridge) and [`crate::abi`] (interface-table loading).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -7,8 +7,8 @@ use std::sync::Arc;
 use anyhow::{Context, Result};
 use libloading::Library;
 
-/// Type of the entry point function that dyn plugins must export.
-pub type PluginEntryPointRaw = unsafe extern "C" fn() -> std::ffi::c_void;
+/// Type of the entry point function that modules must export.
+pub type ModuleEntryPointRaw = unsafe extern "C" fn() -> std::ffi::c_void;
 
 // ---------------------------------------------------------------------------
 // DynLib — Arc-shared dynamic library
@@ -48,7 +48,7 @@ impl DynLib {
 
     /// A handle that does NOT own the library (no unload on drop).
     ///
-    /// For refs obtained from plugins whose library lifetime is managed
+    /// For refs obtained from modules whose library lifetime is managed
     /// externally (e.g. statically linked, or kept alive by another handle).
     /// Uses `dlopen(NULL)` — a handle to the current process, which never
     /// fails and whose "unload" is a no-op.
@@ -100,14 +100,14 @@ pub(crate) fn display_symbol(symbol: &[u8]) -> String {
     String::from_utf8_lossy(&symbol[..end]).into_owned()
 }
 
-/// Quick check: does the file look like a plugin with the given entry symbol?
+/// Quick check: does the file expose the given entry symbol?
 ///
 /// # Safety
 ///
 /// Probes an arbitrary dynamic library for a specific exported symbol.
-pub unsafe fn looks_like_plugin(path: &Path, entry_symbol: &[u8]) -> bool {
+pub unsafe fn looks_like_module(path: &Path, entry_symbol: &[u8]) -> bool {
     match unsafe { DynLib::load(path) } {
-        Ok(lib) => unsafe { lib.try_symbol::<PluginEntryPointRaw>(entry_symbol) }.is_some(),
+        Ok(lib) => unsafe { lib.try_symbol::<ModuleEntryPointRaw>(entry_symbol) }.is_some(),
         Err(_) => false,
     }
 }

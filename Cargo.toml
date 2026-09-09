@@ -10,7 +10,7 @@ readme = "README.md"
 [dependencies]
 libloading = "0.8"
 anyhow = "1"
-abi-vtable-macro = "0.1"
+abi-vtable-macro = { path = "../abi-vtable-macro", version = "0.1" }
 
 # Independent repository root — never joins a parent workspace.
 [workspace]

@@ -1,7 +1,7 @@
 //! # dyn-loader — standardized module loading protocol
 //!
 //! A **language-agnostic module loading protocol** built on the C ABI.
-//! Not a "plugin system": any dynamic library (.so/.dll/.dylib) that follows
+//! Any dynamic library (.so/.dll/.dylib) that follows
 //! the protocol becomes a *module* that any host — in any language — can
 //! load, call, share and release.
 //!
@@ -59,7 +59,7 @@ pub use abi::{
     AbiBox, AbiBoxHandle, AbiRef, AbiTable, GeneratedFunction, MathModuleVtable, MathSession,
     abi_box_free_rust,
 };
-pub use helpers::{DynLib, looks_like_plugin};
+pub use helpers::{DynLib, looks_like_module};
 pub use abi_vtable_macro::abi_vtable;
 pub use native::{
     AbiDynFatPtr, AbiStableDynRef, ModuleDynEntryPoint, NativeModule, ReleaseFn, RetainFn,
