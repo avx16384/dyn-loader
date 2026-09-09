@@ -48,11 +48,17 @@ Core types:
 
 ## Usage
 
-### Layer 1: `abi` — plain C interface table (cross-language)
+### Layer 1: `abi` — C interface table (cross-language)
 
 The module exports a function returning a `*const` to a plain
 `#[repr(C)]` struct of function pointers. No trait objects involved —
 callable from C, C++, Zig, anything with a C FFI.
+
+Two ways to build the module side — **hand-written** or
+**macro-generated** — and they produce the exact same contract, so the
+host side is identical either way. Both are shown below.
+
+#### A. Without the macro — hand-written vtable
 
 **Module side (Rust)**
 
@@ -87,15 +93,11 @@ let vtable = module.vtable();
 let sum = unsafe { (vtable.add)(std::ptr::null_mut(), 2, 3) }; // 5
 ```
 
-The same vtable layout can be produced from any language with a C FFI
-(C, C++, Zig, ...): just export a function returning `*const MyVtable`
-to a `#[repr(C)]`-equivalent struct.
+#### B. With the macro — `#[abi_vtable]`
 
-### Layer 1 shortcut: `#[abi_vtable]` — generate the table from a trait
-
-Writing the vtable struct, thunks, static and getter by hand (as above) is
-error-prone. The `abi_vtable` attribute macro generates **all of it** from a
-plain trait definition — C-ABI stability with Rust ergonomics:
+You write only a trait + an impl; the `abi_vtable` attribute macro
+generates the vtable struct, thunks, statics and getter — exactly what
+variant A writes by hand.
 
 **Module side (Rust)**
 
@@ -131,7 +133,7 @@ What the macro generates from `#[abi_vtable(name = "calc")]`:
 | static vtable | `CALC_VTABLE` | thunks wired in field order |
 | getter | `calc_get_vtable` | `#[no_mangle] extern "C"` entry point for hosts |
 
-**Host side** — identical to the plain Layer 1:
+**Host side (Rust)** — identical to variant A:
 
 ```rust,ignore
 let module = unsafe {
@@ -153,81 +155,78 @@ Rules the macro enforces for you:
 - `&mut self` receivers are rejected — use interior mutability
   (e.g. `AtomicI32` fields) instead.
 
-### Consuming a `#[abi_vtable]` module from other languages
+#### Other languages — reference snippets
 
-The generated contract is plain C: a getter symbol returning a pointer to a
-struct of function pointers. Given the trait
+> The snippets below are **reference material only** — small fragments to
+> convey the idea, not complete implementations. The contract is plain C:
+> a getter symbol returning a pointer to a `#[repr(C)]`-equivalent struct
+> of function pointers, with a leading `ctx` on every call.
 
-```rust,ignore
-#[abi_vtable(name = "e2e")]
-pub trait E2eMath {
-    fn add(&self, a: i32, b: i32) -> i32;
-    fn mul(&self, a: i32, b: i32) -> i32;
-}
-```
-
-the exported surface is exactly:
-
-- symbol `e2e_get_vtable`, returning `const E2eMathVtable*`
-- struct `E2eMathVtable` with fields `add`, `mul` (declaration order)
-- each fn pointer: `ret (*)(void* ctx, args...)` — cdecl
-- `ctx` is reserved: stateless tables may pass `NULL` (the module dispatches
-  on its own const instance)
-
-**C host**
+**As a module (exposing a vtable)**
 
 ```c
-#include <dlfcn.h>
-
-typedef struct E2eMathVtable {
+/* C — struct, one static instance, one getter */
+typedef struct CalcVtable {
     int (*add)(void *ctx, int a, int b);
-    int (*mul)(void *ctx, int a, int b);
-} E2eMathVtable;
+} CalcVtable;
 
-void *lib = dlopen("libe2e_module.so", RTLD_NOW | RTLD_LOCAL);
-const E2eMathVtable *(*get_vtable)(void);
-*(void **)(&get_vtable) = dlsym(lib, "e2e_get_vtable");
-
-const E2eMathVtable *vt = get_vtable();
-int sum = vt->add(NULL, 20, 22);   /* 42 */
+static int calc_add(void *ctx, int a, int b) { (void)ctx; return a + b; }
+static const CalcVtable CALC_VTABLE = { calc_add };
+const CalcVtable *calc_get_vtable(void) { return &CALC_VTABLE; }
 ```
-
-**C++ host**
 
 ```cpp
+// C++ — extern "C" keeps symbols and calling convention C
 extern "C" {
-typedef struct E2eMathVtable {
-    int (*add)(void *ctx, int a, int b);
-    int (*mul)(void *ctx, int a, int b);
-} E2eMathVtable;
+static int calc_add(void *ctx, int a, int b) { return a + b; }
+static const CalcVtable CALC_VTABLE = { calc_add };
+const CalcVtable *calc_get_vtable() { return &CALC_VTABLE; }
 }
-
-auto get_vtable = reinterpret_cast<const E2eMathVtable *(*)()>(
-    dlsym(lib, "e2e_get_vtable"));
-const E2eMathVtable *vt = get_vtable();
-int sum = vt->add(nullptr, 20, 22);
 ```
-
-**Zig host**
 
 ```zig
-const E2eMathVtable = extern struct {
+// Zig — extern struct + callconv(.c) mirror the #[repr(C)] layout
+const CalcVtable = extern struct {
     add: *const fn (ctx: ?*anyopaque, a: i32, b: i32) callconv(.c) i32,
-    mul: *const fn (ctx: ?*anyopaque, a: i32, b: i32) callconv(.c) i32,
 };
-
-var lib = try std.DynLib.open("libe2e_module.so");
-const get_vtable = lib.lookup(
-    *const fn () callconv(.c) *const E2eMathVtable,
-    "e2e_get_vtable",
-) orelse return error.SymbolNotFound;
-const vt = get_vtable();
-const sum = vt.add(null, 20, 22);
+fn calc_add(ctx: ?*anyopaque, a: i32, b: i32) callconv(.c) i32 {
+    _ = ctx;
+    return a + b;
+}
+export fn calc_get_vtable() *const CalcVtable {
+    return &CalcVtable{ .add = &calc_add };
+}
 ```
 
-Rules for foreign hosts:
+**As a host (loading and calling)**
 
-- match the struct **field order** to the trait method declaration order —
+```c
+/* C — dlopen + dlsym, then call through the table */
+void *lib = dlopen("libmy_module.so", RTLD_NOW | RTLD_LOCAL);
+const CalcVtable *(*get_vtable)(void) = dlsym(lib, "calc_get_vtable");
+int sum = get_vtable()->add(NULL, 2, 3);   /* 5 */
+```
+
+```cpp
+// C++ — dlsym + reinterpret_cast
+auto get_vtable = reinterpret_cast<const CalcVtable *(*)()>(
+    dlsym(lib, "calc_get_vtable"));
+int sum = get_vtable()->add(nullptr, 2, 3);
+```
+
+```zig
+// Zig — std.DynLib lookup (link libc: zig build-exe host.zig -lc)
+var lib = try std.DynLib.open("libmy_module.so");
+const get_vtable = lib.lookup(
+    *const fn () callconv(.c) *const CalcVtable,
+    "calc_get_vtable",
+) orelse return error.SymbolNotFound;
+const sum = get_vtable().add(null, 2, 3);
+```
+
+Rules for foreign hosts and modules:
+
+- match the struct **field order** to the counterpart's declaration order —
   positional contract, no names cross the boundary.
 - keep the leading `void*`/`?*anyopaque` ctx parameter even if unused.
 - only C scalars (i8..i64, u8..u64, f32/f64, bool, usize/isize) may appear in
