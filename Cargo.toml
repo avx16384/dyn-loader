@@ -1,6 +1,6 @@
 [package]
 name = "dyn-loader"
-version = "0.7.0"
+version = "0.7.1"
 edition = "2024"
 description = "Standardized module loading protocol over the C ABI: language-agnostic interface tables, ref-counted interface references and single-owner data boxes for .so/.dll/.dylib modules. Includes a Rust-native fat-pointer fast path (same-compiler-version clause)."
 license = "Apache-2.0"

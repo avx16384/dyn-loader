@@ -290,6 +290,9 @@ Rules for foreign hosts and modules:
   signatures; the macro rejects anything else at compile time.
 - pass `NULL`/`null` ctx for stateless tables; instance handles (`AbiRef`)
   pass the ctx they received from the module.
+- Rust hosts that declare the shared trait with the same `#[abi_vtable]`
+  attribute get the generated `{Name}Host` safe wrapper for free — no
+  `unsafe` fn-pointer calls needed (see variant B above).
 
 ---
 
