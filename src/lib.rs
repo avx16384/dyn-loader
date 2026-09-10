@@ -28,38 +28,46 @@
 //!
 //! ## Layers
 //!
-//! - **[`abi`]** — the protocol standard layer: interface tables
-//!   ([`AbiTable<T>`]), ref-counted interface references
-//!   ([`AbiRef<T>`], [`AbiStableDynRef`]) and single-owner data boxes
-//!   ([`AbiBox`]). Pure C ABI, works from C/C++/Zig/anything.
 //! - **[`native`]** — the Rust convenience layer: skip hand-written vtables
 //!   by exchanging native Rust fat pointers (`SafeArcDyn`, `NativeModule`).
 //!   Requires identical toolchain on both sides. Rust-to-Rust only.
+//! - **[`abi`]** *(feature `abi`, enabled by default)* — the protocol
+//!   standard layer: interface tables ([`AbiTable<T>`]), ref-counted
+//!   interface references ([`AbiRef<T>`], [`AbiStableDynRef`]) and
+//!   single-owner data boxes ([`AbiBox`]). Pure C ABI, works from
+//!   C/C++/Zig/anything. Disable the feature for Rust-only hosts that
+//!   never touch C interface tables.
 //!
 //! ## Module lifecycle
 //!
 //! ```ignore
-//! // Host loads a module and its interface table:
+//! // Host loads a module and its interface table (feature "abi"):
 //! let iface = unsafe { AbiTable::<MyInterface>::load("libmy.so", b"my_get_interface\0")? };
 //! let sum = unsafe { (iface.get().add)(1, 2) };
 //!
-//! // Ref-counted module object (multi-owner):
+//! // Ref-counted module object (multi-owner, feature "abi"):
 //! let obj = unsafe { AbiRef::<MyInterface>::load(&path, b"my_get_dyn\0")? };
 //!
-//! // Single-owner data box (freed by the producer module):
+//! // Single-owner data box (freed by the producer module, feature "abi"):
 //! let data = unsafe { AbiBoxHandle::load(&path, b"my_get_data\0")? };
+//!
+//! // Or the native fat-pointer bridge (no feature needed):
+//! let module = NativeModule::<dyn MyTrait>::load("libmy.so", b"my_entry\0")?;
 //! ```
 
+#[cfg(feature = "abi")]
 pub mod abi;
 #[path = "native.rs"]
 pub mod native;
 mod helpers;
 
+#[cfg(feature = "abi")]
 pub use abi::{
     AbiBox, AbiBoxHandle, AbiRef, AbiTable, GeneratedFunction, MathModuleVtable, MathSession,
     abi_box_free_rust,
 };
 pub use helpers::{DynLib, looks_like_module};
+#[cfg(feature = "abi")]
 pub use abi_vtable_macro::abi_vtable;
 pub use native::{
     AbiDynFatPtr, AbiStableDynRef, ModuleDynEntryPoint, NativeModule, ReleaseFn, RetainFn,

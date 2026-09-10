@@ -19,6 +19,13 @@ Two modes — **Mode 1 is the primary, recommended way to use this crate**:
    across toolchains and languages — reach for it when cross-language
    access matters more than ergonomics.
 
+Crate features:
+
+- **`abi`** (enabled by default) — everything for Mode 2: `AbiTable`,
+  `AbiRef`, `AbiBox` and the `abi_vtable` attribute macro. Disable it with
+  `default-features = false` for Rust-only hosts that use only the native
+  fat-pointer bridge (Mode 1 needs no features).
+
 Core types:
 
 - **`DynLib`**: wraps `libloading::Library` with `Arc` for shared ownership.
@@ -131,8 +138,9 @@ let sum = unsafe { (vtable.add)(std::ptr::null_mut(), 2, 3) }; // 5
 #### B. With the macro — `#[abi_vtable]`
 
 You write only a trait + an impl; the `abi_vtable` attribute macro
-generates the vtable struct, thunks, statics and getter — exactly what
-variant A writes by hand.
+generates the vtable struct, thunks, statics, the getter — and a
+**host-side safe wrapper** — exactly what variant A writes by hand,
+plus safe calling ergonomics on the host side.
 
 **Module side (Rust)**
 
@@ -167,16 +175,29 @@ What the macro generates from `#[abi_vtable(name = "calc")]`:
 | static instance | `CALC_INSTANCE` | the `$instance` expression |
 | static vtable | `CALC_VTABLE` | thunks wired in field order |
 | getter | `calc_get_vtable` | `#[no_mangle] extern "C"` entry point for hosts |
+| host wrapper | `CalcHost` | safe methods over the vtable + ctx — no `unsafe` fn-pointer calls on the host side |
 
-**Host side (Rust)** — identical to variant A:
+**Host side (Rust)** — declare the same trait with the same
+`#[abi_vtable(name = "calc")]` (share one trait-definition file between
+host and module, like the vtable struct in variant A), then use the
+generated wrapper:
 
 ```rust,ignore
+use dyn_loader::AbiTable;
+
 let module = unsafe {
     AbiTable::<CalcVtable>::load("libmy_calc.so", b"calc_get_vtable\0")?
 };
-let vt = module.vtable();
-let sum = unsafe { (vt.add)(ctx, 2, 3) }; // ctx = *const MyCalc as *mut c_void
+let host = CalcHost::new(module.vtable(), std::ptr::null_mut());
+let sum = host.add(2, 3);        // 5 — plain safe call, no unsafe block
+assert!(host.is_even(10));
 ```
+
+The wrapper holds the vtable reference plus the instance context
+(`null` for stateless tables; pass the ctx you received from the module
+for instance handles). Keep the `AbiTable` handle alive for as long as
+the wrapper exists — it borrows the vtable, so this is enforced by the
+borrow checker.
 
 Rules the macro enforces for you:
 
