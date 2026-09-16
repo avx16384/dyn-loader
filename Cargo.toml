@@ -1,23 +1,22 @@
 [package]
 name = "dyn-loader"
-version = "0.7.1"
+version = "0.8.0"
 edition = "2024"
-description = "Standardized module loading protocol over the C ABI: language-agnostic interface tables, ref-counted interface references and single-owner data boxes for .so/.dll/.dylib modules. Includes a Rust-native fat-pointer fast path (same-compiler-version clause)."
+description = "The loading gate and the Rust-native fat-pointer bridge of the dyn protocol: load a trait object from a .so/.dll/.dylib and get a safe, ref-counted handle to it (same-compiler-version clause)."
 license = "Apache-2.0"
 repository = "https://github.com/avx16384/dyn-loader"
 readme = "README.md"
 
 [features]
-default = ["abi"]
-# Mode 2 — the C interface-table layer (AbiTable / AbiRef / AbiBox) and the
-# `abi_vtable` attribute macro. Disable for Rust-only hosts that only use
-# the native fat-pointer bridge.
-abi = ["dep:abi-vtable-macro"]
+# The load-side reconciliation: compiler facts are mapped to ABI levels and
+# compared before a module is dialled. Optional — a host that already knows
+# its modules match does not need the policy layer.
+abi-map = ["dep:dyn-abi-map"]
 
 [dependencies]
 libloading = "0.8"
 anyhow = "1"
-abi-vtable-macro = { path = "../abi-vtable-macro", version = "0.3", optional = true }
+dyn-abi-map = { path = "../dyn-abi-map", version = "0.1", optional = true }
 
 # Independent repository root — never joins a parent workspace.
 [workspace]

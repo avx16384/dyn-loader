@@ -5,7 +5,7 @@
 //! Arc-like retain/release for cross-boundary memory safety.
 //!
 //! This module follows the two cross-module invariants shared by all layers
-//! of this crate (see [`crate::abi`] for the full statement):
+//! of the dyn protocol (see [`crate`] for the full statement):
 //!
 //! 1. **Whoever allocates, deallocates** — the module's `retain`/`release`
 //!    function pointers execute inside the module that created the object
@@ -18,8 +18,8 @@
 //! - **AbiDynFatPtr**: ABI-stable representation of a Rust fat pointer,
 //!   `#[repr(C)]` for C ABI compatibility.
 //! - **AbiStableDynRef**: fat pointer + retain/release function pointers.
-//! - **SafeArcDyn<T>**: safe, cloneable handle over an `AbiStableDynRef`.
-//! - **NativeModule<T>**: loaded module dereferencing to `&T`.
+//! - `SafeArcDyn<T>`: safe, cloneable handle over an `AbiStableDynRef`.
+//! - `NativeModule<T>`: loaded module dereferencing to `&T`.
 //!
 //! ## Usage
 //!

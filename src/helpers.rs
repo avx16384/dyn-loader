@@ -1,5 +1,6 @@
 //! Shared `DynLib` wrapper and helpers used by both [`crate::native`]
-//! (Rust fat-pointer bridge) and [`crate::abi`] (interface-table loading).
+//! (Rust fat-pointer bridge) and the C interface-table layer that builds on
+//! this crate (`cdyn-loader`).
 
 use std::path::Path;
 use std::sync::Arc;
@@ -95,7 +96,11 @@ impl DynLib {
 // Helpers
 // ---------------------------------------------------------------------------
 
-pub(crate) fn display_symbol(symbol: &[u8]) -> String {
+/// Render a symbol name for a message: bytes up to the NUL, as text.
+///
+/// Public because the layer built on top of this one reports the same kind of
+/// error and should name symbols the same way.
+pub fn display_symbol(symbol: &[u8]) -> String {
     let end = symbol.iter().position(|&b| b == 0).unwrap_or(symbol.len());
     String::from_utf8_lossy(&symbol[..end]).into_owned()
 }
